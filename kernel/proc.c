@@ -125,6 +125,27 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  // inicializar prioridad y boost
+  p->priority = 0; // prioridad inicial
+  p->boost = 1; // boost inicial
+
+  // actualizar prioridades de procesos existentes
+  struct proc *pp;
+  for(pp = proc; pp < &proc[NPROC]; pp++) {
+    if(pp != p && pp->state != USED && pp->state != ZOMBIE) {
+      pp->priority += pp->boost;
+      
+      // ajustar boost si prioridad llega a 9 o 0
+      if(pp->priority >= 9){
+        pp->priority = 9;
+        pp->boost = -1;
+      } else if(pp->priority <= 0){
+        pp->priority = 0;
+        pp->boost = 1;
+      }
+    }
+  }
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -302,6 +323,9 @@ fork(void)
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
+  // aseguramos que el proceso hijo herede el boost de su padre
+  np->boost = p->boost;
+
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
@@ -445,6 +469,8 @@ void
 scheduler(void)
 {
   struct proc *p;
+  struct proc *highest_p;
+  int highest_priority;
   struct cpu *c = mycpu();
 
   c->proc = 0;
@@ -454,26 +480,45 @@ scheduler(void)
     // processes are waiting.
     intr_on();
 
-    int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+    highest_p = 0; // inicializamos puntero nulo
+    highest_priority = 10; // inicializamos prioridad a 10 (uno más que prioridad maxima)
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+    // encontramos el proceso RUNNABLE con la prioridad mas alta
+    for(p = proc; p < &proc[NPROC]; p++){
+      acquire(&p->lock);
+      if(p->state == RUNNABLE){
+        if(p->priority < highest_priority){
+          // encontramos un proceso con mayor prioridad
+          if(highest_p != 0){
+            // liberamos el lock del proceso seleccionado previamente
+            release(&highest_p->lock);
+          }
+          // actualizamos la prioridad y mantenemos el lock en p
+          highest_priority = p->priority;
+          highest_p = p;
+        } else {
+          // liberamos el lock si el proceso no tiene mayor prioridad
+          release(&p->lock);
+        }
+      } else {
+        // liberamos el lock si el proceso no está en RUNNABLE
+        release(&p->lock);
       }
-      release(&p->lock);
     }
-    if(found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
+
+    // seleccionamos el proceso a ejecutar
+    if(highest_p != 0){
+      // cambiamos el estado del proceso
+      highest_p->state = RUNNING;
+      // actualizamos al proceso seleccionado
+      c->proc = highest_p;
+      // realizamos cambio de contexto
+      swtch(&c->context, &highest_p->context);
+      c->proc = 0;
+      // liberamos el lock del proceso
+      release(&highest_p->lock);
+    } else {
+      // esperamos por una interrupcion si no hay procesos RUNNABLE
       intr_on();
       asm volatile("wfi");
     }
