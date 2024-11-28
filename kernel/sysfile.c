@@ -76,6 +76,11 @@ sys_read(void)
   argint(2, &n);
   if(argfd(0, 0, &f) < 0)
     return -1;
+
+  //Verificar si el achivo es legible
+  if(f->readable == 0)
+    return -1;
+
   return fileread(f, p, n);
 }
 
@@ -90,6 +95,18 @@ sys_write(void)
   argint(2, &n);
   if(argfd(0, 0, &f) < 0)
     return -1;
+
+  // Verificar si el archivo es escribible
+  if(f->writable == 0)
+    return -1;
+
+  // Verficar si el archivo es inmutable
+  ilock(f->ip);
+  if(f->ip->perm == 5){
+    iunlock(f->ip);
+    return -1;
+  }
+  iunlock(f->ip);
 
   return filewrite(f, p, n);
 }
@@ -311,6 +328,8 @@ sys_open(void)
   int n;
 
   argint(1, &omode);
+  if(omode < 0)
+    return -1;
   if((n = argstr(0, path, MAXPATH)) < 0)
     return -1;
 
@@ -322,6 +341,8 @@ sys_open(void)
       end_op();
       return -1;
     }
+    // Establecer permisos por defecto al crear un archivo (lectura y escritura)
+    ip->perm = 3;
   } else {
     if((ip = namei(path)) == 0){
       end_op();
@@ -333,12 +354,41 @@ sys_open(void)
       end_op();
       return -1;
     }
+
+    // Manejo especial para dispositivos
+    if(ip->type == T_DEVICE){
+      // No aplicar restricciones de permisos a dispositivos
+    } else {
+      // Verificar si el archivo se intenta abir en modo escritura y es inmutable
+      if((omode & (O_WRONLY | O_RDWR)) && (ip->perm == 5)){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+
+      // Verificar permisos de escritura
+      if((omode & (O_WRONLY | O_RDWR)) && !(ip->perm & 2)){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+
+      // Verificar permisos de lectura
+      if((omode & O_RDONLY) && !(ip->perm & 1)){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
   }
 
-  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
-    iunlockput(ip);
-    end_op();
-    return -1;
+  // Verificar si es un dispositivo válido
+  if(ip->type == T_DEVICE){
+    if(ip->major < 0 || ip->major >= NDEV){
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
@@ -349,19 +399,16 @@ sys_open(void)
     return -1;
   }
 
-  if(ip->type == T_DEVICE){
-    f->type = FD_DEVICE;
-    f->major = ip->major;
-  } else {
-    f->type = FD_INODE;
-    f->off = 0;
-  }
+  // Inicializar la estructura de archivo
+  f->type = (ip->type == T_DEVICE) ? FD_DEVICE : FD_INODE;
   f->ip = ip;
+  f->off = 0;
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
 
-  if((omode & O_TRUNC) && ip->type == T_FILE){
-    itrunc(ip);
+  // Si es un dispositivo, asignar el número mayor
+  if(ip->type == T_DEVICE){
+    f->major = ip->major;
   }
 
   iunlock(ip);
@@ -501,5 +548,39 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_chmod(void)
+{
+  char path[MAXPATH];
+  int mode;
+  struct inode *ip;
+
+  if(argstr(0, path, MAXPATH) < 0)
+    return -1;
+  argint(1, &mode);
+  if(mode < 0)
+    return -1;
+
+  begin_op();
+  if((ip = namei(path)) == 0){
+    end_op();
+    return -1;
+  }
+  ilock(ip);
+
+  if(ip->perm == 5){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  ip->perm = mode;
+  iupdate(ip);
+  iunlockput(ip);
+  end_op();
+
   return 0;
 }

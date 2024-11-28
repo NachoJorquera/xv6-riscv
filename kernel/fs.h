@@ -36,6 +36,8 @@ struct dinode {
   short nlink;          // Number of links to inode in file system
   uint size;            // Size of file (bytes)
   uint addrs[NDIRECT+1];   // Data block addresses
+  int perm;             // Permisos del archivo
+  char pad[60];         // Padding para que el tamaño del struct sea divisor de 1024
 };
 
 // Inodes per block.

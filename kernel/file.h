@@ -27,6 +27,7 @@ struct inode {
   short nlink;
   uint size;
   uint addrs[NDIRECT+1];
+  int perm;             // Permisos del archivo
 };
 
 // map major device number to device functions.
